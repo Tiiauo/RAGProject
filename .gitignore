@@ -1,0 +1,70 @@
+# ============ Python ============
+# 字节码缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 打包/分发产物
+build/
+dist/
+*.egg-info/
+*.egg
+MANIFEST
+
+# 测试与覆盖率
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ============ 虚拟环境 (uv / venv) ============
+.venv/
+venv/
+env/
+ENV/
+
+# 注意：uv.lock 建议提交，保证团队环境一致，因此不忽略
+
+# ============ 环境变量与密钥 ============
+# 项目使用 python-dotenv，本地配置严禁入库
+.env
+.env.*
+!.env.example
+
+# ============ IDE ============
+# PyCharm
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# VS Code
+.vscode/
+
+# ============ 项目运行时产物 ============
+# 日志文件
+*.log
+logs/
+
+# 本地文档解析输出（Markdown 转换结果、图片等）
+output/
+data/
+tmp/
+temp/
+
+# Jupyter 实验
+.ipynb_checkpoints/
+
+# ============ 操作系统 ============
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
