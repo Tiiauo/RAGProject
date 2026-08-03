@@ -4,6 +4,7 @@ import re
 import time
 from collections import deque
 from pathlib import Path
+from typing import Any
 
 from langchain.chat_models import init_chat_model
 
@@ -30,16 +31,26 @@ class NodeMDImg(NodeBase):
         images_path_obj = md_path_obj.parent / "images"
         if not images_path_obj.exists():
             logger.error(f"图片目录不存在：{images_path_obj}")
-            raise FileNotFoundError(f"图片目录不存在：{images_path_obj}")
-
+            return state
+        if not images_path_obj.is_dir():
+            logger.error(f"图片路径不是目录：{images_path_obj}")
+            return state
         file_name_list = os.listdir(images_path_obj)
         if not file_name_list:
             logger.error(f"图片目录为空：{images_path_obj}")
-            raise ValueError(f"图片目录为空：{images_path_obj}")
+            return state
 
+        image_file_list = []
+
+        self.get_images_desc(file_name_list, image_file_list, images_path_obj, md_content)
+
+        logger.info(f"图片描述：{to_json(image_file_list)}")
+
+        return state
+
+    def get_images_desc(self, file_name_list, image_file_list, images_path_obj,md_content):
         IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
         MAX_CONTEXT_LEN = 300
-        image_file_list = []
         for file_name in file_name_list:
             if Path(file_name).suffix.lower() not in IMAGE_EXTENSIONS:
                 logger.warning(f"图片格式不支持：{file_name}")
@@ -62,15 +73,22 @@ class NodeMDImg(NodeBase):
                 "images_path": str(images_path_obj / file_name),
             })
 
-        logger.info(f"图片列表：{to_json(image_file_list)}")
-
         llm = init_chat_model(
             model=LLMConfig.model_name,
             model_provider='openai',
-            api_key = LLMConfig.api_key,
-            base_url = LLMConfig.base_url,
-            temperature = LLMConfig.temperature,
+            api_key=LLMConfig.api_key,
+            base_url=LLMConfig.base_url,
+            temperature=float(LLMConfig.temperature),
         )
+
+        MIME_MAP = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".bmp": "image/bmp",
+            ".webp": "image/webp",
+        }
 
         dq = deque()
         for image_file in image_file_list:
@@ -78,40 +96,38 @@ class NodeMDImg(NodeBase):
             with open(image_file["images_path"], "rb") as f:
                 image_bytes = f.read()
                 base64_image = base64.b64encode(image_bytes).decode("utf-8")
+                mime_type = MIME_MAP.get(Path(image_file["images_path"]).suffix.lower(), "image/jpeg")
+                base64_url =  f"data:{mime_type};base64,{base64_image}"
             messages = [
                 {
                     "role": "system",
                     "content": """你是企业知识库的技术文档图片解析助手。
-                    你的任务是根据用户提供的上下文信息以及图片base64编码，
+                    你的任务是根据用户提供的上下文信息以及图片base64信息,
                     把图片中的有效信息转换为准确、独立、可检索的 Markdown 文本。
-                    必须以图片中的真实内容为依据，根据不得猜测看不清或无法确认的信息。"""
+                    必须以图片中的真实内容为依据，不得猜测看不清或无法确认的信息。"""
                 },
                 {
                     "role": "user",
                     "content": [
-                            {
-                                "type": "text",
-                                "text":  f"""
+                        {
+                            "type": "text",
+                            "text": f"""
                                         这是一张图片，图片上文部分为"{image_file.get("pre_context")}"，
                                         下文部分为"{image_file.get("post_context")}"，
-                                        请用中文根据上下文信息对这张图片进行描述,字数在50字以内。"""
+                                        请用中文根据上下文信息对这张图片进行描述!"""
 
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": "data:image/jpeg;base64," + base64_image
-                                }
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": base64_url
                             }
-                        ]
+                        }
+                    ]
                 }
             ]
             res = llm.invoke(messages)
             image_file["description"] = res.content
-
-        logger.info(f"图片描述：{to_json(image_file_list)}")
-
-        return state
 
     def check_md_path(self, state: ImportGraphState) -> tuple[str, Path]:
         md_path = state.get("md_path", "")
