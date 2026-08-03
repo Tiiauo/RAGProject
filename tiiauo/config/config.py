@@ -10,3 +10,5 @@ class LLMConfig:
     api_key = os.getenv("VL_API_KEY")
     base_url = os.getenv("VL_BASE_URL")
     temperature = os.getenv("VL_TEMPERATURE")
+
+RPM = 500

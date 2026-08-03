@@ -4,11 +4,9 @@ import re
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
-
 from langchain.chat_models import init_chat_model
 
-from tiiauo.config.config import LLMConfig
+from tiiauo.config.config import LLMConfig, RPM
 from tiiauo.import_process.base import NodeBase
 from tiiauo.import_process.state import ImportGraphState
 from tiiauo.tool.logger import logger
@@ -92,7 +90,6 @@ class NodeMDImg(NodeBase):
 
         dq = deque()
         for image_file in image_file_list:
-            self.acquire(dq, 100)
             with open(image_file["images_path"], "rb") as f:
                 image_bytes = f.read()
                 base64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -126,6 +123,7 @@ class NodeMDImg(NodeBase):
                     ]
                 }
             ]
+            self.acquire(dq, RPM)
             res = llm.invoke(messages)
             image_file["description"] = res.content
 
@@ -159,7 +157,7 @@ class NodeMDImg(NodeBase):
         return md_content, md_path_obj
 
     @staticmethod
-    def acquire(dq,rpm):
+    def acquire(dq,rpm:int):
         if rpm <= 0:
             raise ValueError("rpm 必须大于 0")
         while True:
