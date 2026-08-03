@@ -9,6 +9,8 @@ from tiiauo.import_process.nodes.node_item_name_recognition import NodeItemNameR
 from tiiauo.import_process.nodes.node_md_img import NodeMDImg
 from tiiauo.import_process.nodes.node_pdf_to_md import NodePDFToMD
 from tiiauo.import_process.state import ImportGraphState
+from tiiauo.tool.logger import logger
+from tiiauo.tool.to_json_format import to_json
 
 
 class ImportMainGraphRunner:
@@ -30,10 +32,7 @@ class ImportMainGraphRunner:
 
     def add_edges(self):
         self.builder.set_entry_point(NodeEntry.name)
-        self.builder.add_conditional_edges(NodeEntry.name, self.after_entry_router,{
-            NodePDFToMD.name: NodePDFToMD.name,
-            NodeMDImg.name: NodeMDImg.name
-        })
+        self.builder.add_conditional_edges(NodeEntry.name, self.after_entry_router)
         self.builder.add_edge(NodePDFToMD.name, NodeMDImg.name)
         self.builder.add_edge(NodeMDImg.name, NodeDocumentSplit.name)
         self.builder.add_edge(NodeDocumentSplit.name,NodeItemNameRecognition.name)
@@ -70,7 +69,8 @@ class ImportMainGraphRunner:
 
 if __name__ == '__main__':
     init_state = {
-        "local_file_path":r"D:\output\hak180产品安全手册.md",
+        "local_file_path":r"D:\资料\资料\掌柜智库\资料\05-设备手册汇总\doc\hak180产品安全手册.pdf",
+        "local_dir":r"D:\Learn_AI\RAGProjectData"
     }
     result = ImportMainGraphRunner.create_and_run(init_state)
-    print(result)
+    logger.info(to_json(result))

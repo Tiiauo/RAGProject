@@ -2,9 +2,9 @@
 
 一个基于 **LangGraph** 编排的 RAG（Retrieval-Augmented Generation，检索增强生成）项目。
 
-当前阶段聚焦于搭建 **RAG 知识库构建流程**：将 PDF 或 Markdown 文档依次完成解析、图片理解、文本切分、主体识别、向量化，并写入 Milvus。后续将在同一套 Graph 架构下增加 **知识检索流程**，最终形成“知识入库 Graph + 知识检索 Graph”两条相互独立、共享数据规范的工作流。
+当前阶段聚焦于实现 **RAG 知识库构建流程**：将 PDF 或 Markdown 文档依次完成解析、图片理解、文本切分、主体识别、向量化，并写入 Milvus。后续将在同一套 Graph 架构下增加 **知识检索流程**，最终形成“知识入库 Graph + 知识检索 Graph”两条相互独立、共享数据规范的工作流。
 
-> 当前项目处于架构搭建阶段。文档路由节点已经实现，其余业务节点已建立统一接口和执行顺序，具体处理逻辑仍需逐步补充。
+> 当前项目处于知识库构建阶段。输入校验与格式路由已经实现，PDF 路径已接入 MinerU API，可完成 PDF 上传、云端解析、结果下载和 Markdown 落盘；图片处理、文档切片、主体识别、向量化和 Milvus 入库仍是待实现节点。
 
 ## 项目目标
 
@@ -28,8 +28,8 @@ flowchart LR
 
     classDef current fill:#dff7e5,stroke:#24924d,color:#163d24
     classDef planned fill:#fff5d6,stroke:#c28b16,color:#4d3908,stroke-dasharray: 5 5
-    class ImportGraph,VectorDB current
-    class RetrievalGraph planned
+    class ImportGraph current
+    class VectorDB,RetrievalGraph planned
 ```
 
 - **知识库构建 Graph（当前）**：负责把原始文档转换为可检索的向量数据。
@@ -59,14 +59,41 @@ flowchart TD
 | 节点 | 职责 | 当前状态 |
 | --- | --- | --- |
 | `NodeEntry` | 校验文件路径，识别 PDF/Markdown，并初始化分支状态 | 已实现 |
-| `NodePDFToMD` | 将 PDF 解析为结构化 Markdown | 待实现 |
+| `NodePDFToMD` | 调用 MinerU API，将 PDF 解析为结构化 Markdown 并下载到本地 | 已实现 |
 | `NodeMDImg` | 提取并理解 Markdown 中的图片或多模态内容 | 待实现 |
 | `NodeDocumentSplit` | 根据标题、段落或语义边界切分文档 | 待实现 |
 | `NodeItemNameRecognition` | 识别文档主体并提取标签 | 待实现 |
 | `NodeBGEEmbedding` | 使用 BGE-M3 将切片转换为向量 | 待实现 |
 | `NodeImportMilvus` | 将文本、元数据和向量持久化到 Milvus | 待实现 |
 
-待实现节点目前会原样返回 State，可用于验证 Graph 的连接关系，但尚不会生成真实的解析、向量或入库结果。
+除 `NodeEntry` 和 `NodePDFToMD` 外，其余待实现节点目前会原样返回 State，可用于验证 Graph 的连接关系，但尚不会生成真实的图片理解、切片、向量或入库结果。
+
+### PDF 解析子流程
+
+`NodePDFToMD` 当前通过 MinerU API 完成 PDF 结构化解析：
+
+```mermaid
+flowchart LR
+    Check["校验 pdf_path、local_dir 和 Token"] --> Batch["向 MinerU 申请批次与上传地址"]
+    Batch --> Upload["上传 PDF"]
+    Upload --> Poll["按 batch_id 轮询解析状态"]
+    Poll --> Download["下载解析结果 ZIP"]
+    Download --> Unzip["解压到 local_dir/文件名/"]
+    Unzip --> Rename["full.md 重命名为 原文件名.md"]
+    Rename --> State["写回 State.md_path"]
+```
+
+假设输入为 `manual.pdf`，输出目录为 `D:\\RAGProjectData`，主要产物为：
+
+```text
+D:\RAGProjectData\
+├── manual.zip
+└── manual\
+    ├── manual.md
+    └── ...                         # MinerU 返回的图片等附属文件
+```
+
+> 再次解析同名 PDF 时，程序会先删除 `local_dir/文件名/` 目录再重新解压。请勿把需要长期保存的其他文件放入该目录。
 
 ## 项目结构
 
@@ -77,6 +104,8 @@ RAGProject/
 ├── uv.lock                               # uv 依赖锁定文件
 ├── .env.example                          # 环境变量示例
 └── tiiauo/
+    ├── config/
+    │   └── config.py                     # 加载 .env 与 MinerU 配置
     ├── import_process/
     │   ├── base.py                       # Graph 节点抽象基类
     │   ├── state.py                      # 入库流程的共享状态定义
@@ -89,7 +118,8 @@ RAGProject/
     │       ├── node_bge_embedding.py     # 文本向量化
     │       └── node_import_milvus.py     # Milvus 入库
     └── tool/
-        └── logger.py                     # 彩色日志配置
+        ├── logger.py                     # 彩色日志配置
+        └── to_json_format.py             # 日志用 JSON 格式化工具
 ```
 
 ## State 数据流
@@ -111,7 +141,8 @@ RAGProject/
 
 - Python `>= 3.13`
 - 推荐使用 [uv](https://docs.astral.sh/uv/) 管理依赖
-- 后续完整运行入库流程时，需要可访问的文档解析服务、Embedding 模型和 Milvus 实例
+- PDF 解析需要 MinerU API Token，并且运行环境能够访问 MinerU 服务
+- 后续完整运行入库流程时，还需要 Embedding 模型和 Milvus 实例
 
 ## 安装
 
@@ -121,6 +152,16 @@ uv sync
 
 如果不使用 uv，也可以根据 `pyproject.toml` 使用其他 Python 包管理工具创建环境并安装依赖。
 
+## 配置 MinerU
+
+处理 PDF 前，在项目根目录的 `.env` 中配置 MinerU Token：
+
+```dotenv
+MINERU_API=your_mineru_api_token
+```
+
+项目通过 `python-dotenv` 自动加载该配置。`.env` 已被 Git 忽略，请勿将真实 Token 写入 README、`.env.example` 或提交到仓库。
+
 ## 运行当前 Graph
 
 在项目根目录执行：
@@ -129,22 +170,29 @@ uv sync
 uv run python main_graph.py
 ```
 
-运行前需要将 `main_graph.py` 示例中的 `local_file_path` 修改为本机真实存在的 `.pdf` 或 `.md` 文件路径。
+运行前需要将 `tiiauo/import_process/main_graph.py` 示例中的 `local_file_path` 修改为本机真实存在的 `.pdf` 或 `.md` 文件路径。
 
 也可以在代码中直接调用：
 
 ```python
-from main_graph import ImportMainGraphRunner
+from tiiauo.import_process.main_graph import ImportMainGraphRunner
 
 initial_state = {
     "local_file_path": r"D:\\documents\\example.md",
+    "local_dir": r"D:\\RAGProjectData",
 }
 
 result = ImportMainGraphRunner.create_and_run(initial_state)
 print(result)
 ```
 
-目前只有输入检查和格式路由具有实际处理逻辑，因此此命令主要用于验证 Graph 是否能够正确执行。`.env.example` 暂未定义配置项；接入模型、Milvus 或其他外部服务时，应在其中补充变量名，并将真实密钥写入本地 `.env`。
+`local_file_path` 支持 `.pdf` 和 `.md`：
+
+- 输入 PDF 时，`local_dir` 为必填项，同时必须配置 `MINERU_API`；解析结果会写入该目录。
+- 输入 Markdown 时，会直接跳过 PDF 解析节点，进入 Markdown 图片处理节点。
+- 目前图片处理之后的节点仍为空实现，因此完整 Graph 暂不会产生切片、Embedding 或 Milvus 数据。
+
+当前 `tiiauo/import_process/main_graph.py` 的 `__main__` 区域使用本地示例路径。运行前请替换 `local_file_path` 和 `local_dir`，后续可再将二者改造成命令行参数或 API 入参。
 
 ## 开发新的入库节点
 
@@ -233,7 +281,8 @@ flowchart LR
 - [x] 定义知识库构建 State
 - [x] 完成 PDF/Markdown 输入识别与条件路由
 - [x] 串联完整的知识库构建 Graph 骨架
-- [ ] 实现 PDF 结构化解析
+- [x] 接入 MinerU，实现 PDF 上传、解析结果轮询与下载
+- [x] 解压 MinerU 结果并生成与 PDF 同名的 Markdown 文件
 - [ ] 实现 Markdown 图片提取与多模态理解
 - [ ] 实现文档切片策略
 - [ ] 实现主体识别和标签提取
@@ -249,6 +298,7 @@ flowchart LR
 
 - **LangGraph**：工作流和状态编排
 - **LangChain**：模型、文本处理和 RAG 组件集成
+- **MinerU**：PDF 结构化解析
 - **BGE-M3（规划接入）**：稠密/稀疏文本向量化
 - **Milvus（规划接入）**：向量数据存储与检索
 - **FastAPI（规划使用）**：入库及检索服务接口
@@ -257,7 +307,8 @@ flowchart LR
 ## 注意事项
 
 - 不要提交 `.env`、密钥、模型访问令牌或数据库密码。
-- 当前代码中的示例路径仅用于本地调试，提交前建议改为命令行参数或配置项。
+- 当前代码中的示例输入和输出路径仅用于本地调试，运行前必须替换，后续建议改为命令行参数或 API 入参。
 - PDF 转换和图片理解可能产生临时文件，建议统一写入已忽略的 `output/` 或 `tmp/` 目录。
+- MinerU 解析依赖外部网络服务，应为上传、轮询和下载请求补充合理的超时、重试和错误状态处理。
 - 文档更新或删除时，需要同步更新 Milvus 中对应的切片，避免召回过期知识。
 - 对外返回检索结果时建议携带来源文件、页码或标题路径，保证答案可追溯。

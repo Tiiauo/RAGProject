@@ -35,7 +35,7 @@ class NodeBase(ABC):
 
             return result
 
-        except Exception as e:
+        except Exception:
             logger.exception(f"{self.name} 节点执行失败!")
             raise
 
