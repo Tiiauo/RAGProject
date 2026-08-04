@@ -4,7 +4,7 @@
 
 当前阶段聚焦于实现 **RAG 知识库构建流程**：将 PDF 或 Markdown 文档依次完成解析、图片理解、文本切分、主体识别、向量化，并写入 Milvus。后续将在同一套 Graph 架构下增加 **知识检索流程**，最终形成“知识入库 Graph + 知识检索 Graph”两条相互独立、共享数据规范的工作流。
 
-> 当前项目处于知识库构建阶段。输入校验与格式路由已经实现，PDF 路径已接入 MinerU API，可完成 PDF 上传、云端解析、结果下载和 Markdown 落盘；图片处理、文档切片、主体识别、向量化和 Milvus 入库仍是待实现节点。
+> 当前项目处于知识库构建阶段。输入路由、MinerU PDF 解析和 Markdown 图片处理已经实现；文档切片、主体识别、BGE-M3 向量化和 Milvus 入库仍是待实现节点。
 
 ## 项目目标
 
@@ -60,13 +60,13 @@ flowchart TD
 | --- | --- | --- |
 | `NodeEntry` | 校验文件路径，识别 PDF/Markdown，并初始化分支状态 | 已实现 |
 | `NodePDFToMD` | 调用 MinerU API，将 PDF 解析为结构化 Markdown 并下载到本地 | 已实现 |
-| `NodeMDImg` | 提取并理解 Markdown 中的图片或多模态内容 | 待实现 |
+| `NodeMDImg` | 提取 Markdown 图片，生成描述，上传 MinIO 并改写图片链接 | 已实现 |
 | `NodeDocumentSplit` | 根据标题、段落或语义边界切分文档 | 待实现 |
 | `NodeItemNameRecognition` | 识别文档主体并提取标签 | 待实现 |
 | `NodeBGEEmbedding` | 使用 BGE-M3 将切片转换为向量 | 待实现 |
 | `NodeImportMilvus` | 将文本、元数据和向量持久化到 Milvus | 待实现 |
 
-除 `NodeEntry` 和 `NodePDFToMD` 外，其余待实现节点目前会原样返回 State，可用于验证 Graph 的连接关系，但尚不会生成真实的图片理解、切片、向量或入库结果。
+`NodeDocumentSplit`、`NodeItemNameRecognition`、`NodeBGEEmbedding` 和 `NodeImportMilvus` 当前会原样返回 State，可用于验证 Graph 的连接关系，但尚不会生成真实的切片、标签、向量或入库结果。
 
 ### PDF 解析子流程
 
@@ -95,19 +95,46 @@ D:\RAGProjectData\
 
 > 再次解析同名 PDF 时，程序会先删除 `local_dir/文件名/` 目录再重新解压。请勿把需要长期保存的其他文件放入该目录。
 
+### Markdown 图片处理子流程
+
+`NodeMDImg` 读取 Markdown 同级的 `images/` 目录，并把本地图片转换为可供后续 RAG 检索使用的描述和在线链接：
+
+```mermaid
+flowchart LR
+    Read["读取 Markdown"] --> Images{"存在 images/ 和图片？"}
+    Images -->|否| Skip["跳过图片处理"]
+    Images -->|是| Match["匹配 Markdown 中的图片引用"]
+    Match --> Context["截取图片前后各 300 字符"]
+    Context --> Vision["视觉模型生成中文替代文本"]
+    Vision --> Upload["上传图片到 MinIO"]
+    Upload --> Replace["替换描述与图片 URL"]
+    Replace --> State["写回 State.md_content"]
+```
+
+当前图片处理行为：
+
+- 支持 `.jpg`、`.jpeg`、`.png`、`.gif`、`.bmp` 和 `.webp`。
+- 使用兼容 OpenAI Chat Completions 接口的视觉模型，生成不超过 100 个汉字的单行中文描述。
+- 使用滑动窗口限流器限制模型调用速率，当前配置为 `500 RPM`。
+- 将图片上传至 `MINIO_BUCKET/MINIO_IMG_DIR/`，并把 Markdown 图片地址替换为 MinIO HTTP URL。
+- 不生成新的 Markdown 文件；替换后的全文仅写入 `State.md_content`，供后续节点继续处理。
+- 如果 `images/` 不存在、不是目录或为空，节点记录日志后跳过，不中断 Graph。
+
+> 当前实现每次处理前会删除 `MINIO_IMG_DIR` 前缀下的已有对象。不要让多个任务共用存放重要文件的前缀，并发处理和历史图片保留策略需要在后续版本中完善。
+
 ## 项目结构
 
 ```text
 RAGProject/
-├── main_graph.py                         # 知识库构建 Graph 的装配与运行入口
 ├── pyproject.toml                        # Python 版本与项目依赖
 ├── uv.lock                               # uv 依赖锁定文件
 ├── .env.example                          # 环境变量示例
 └── tiiauo/
     ├── config/
-    │   └── config.py                     # 加载 .env 与 MinerU 配置
+    │   └── config.py                     # MinerU、视觉模型与 MinIO 配置
     ├── import_process/
     │   ├── base.py                       # Graph 节点抽象基类
+    │   ├── main_graph.py                 # 知识库构建 Graph 的装配与运行入口
     │   ├── state.py                      # 入库流程的共享状态定义
     │   └── nodes/
     │       ├── node_entry.py             # 输入校验与格式路由
@@ -118,7 +145,9 @@ RAGProject/
     │       ├── node_bge_embedding.py     # 文本向量化
     │       └── node_import_milvus.py     # Milvus 入库
     └── tool/
+        ├── get_minio_client.py           # MinIO 客户端、Bucket 与访问策略初始化
         ├── logger.py                     # 彩色日志配置
+        ├── sliding_window_rate_limiter.py # 视觉模型 RPM 限流
         └── to_json_format.py             # 日志用 JSON 格式化工具
 ```
 
@@ -142,6 +171,7 @@ RAGProject/
 - Python `>= 3.13`
 - 推荐使用 [uv](https://docs.astral.sh/uv/) 管理依赖
 - PDF 解析需要 MinerU API Token，并且运行环境能够访问 MinerU 服务
+- 图片处理需要支持图片输入的 OpenAI 兼容模型，以及可访问的 MinIO 服务
 - 后续完整运行入库流程时，还需要 Embedding 模型和 Milvus 实例
 
 ## 安装
@@ -152,22 +182,42 @@ uv sync
 
 如果不使用 uv，也可以根据 `pyproject.toml` 使用其他 Python 包管理工具创建环境并安装依赖。
 
-## 配置 MinerU
+## 配置外部服务
 
-处理 PDF 前，在项目根目录的 `.env` 中配置 MinerU Token：
+复制 `.env.example` 为 `.env`，并根据实际服务填写配置：
 
-```dotenv
-MINERU_API=your_mineru_api_token
+```powershell
+Copy-Item .env.example .env
 ```
 
-项目通过 `python-dotenv` 自动加载该配置。`.env` 已被 Git 忽略，请勿将真实 Token 写入 README、`.env.example` 或提交到仓库。
+```dotenv
+# PDF 解析
+MINERU_API=your_mineru_api_token
+
+# OpenAI 兼容的视觉模型
+VL_MODEL_NAME=your_vision_model_name
+VL_API_KEY=your_vision_model_api_key
+VL_BASE_URL=https://your-openai-compatible-provider.example/v1
+VL_TEMPERATURE=0
+
+# MinIO 图片存储
+MINIO_ENDPOINT=127.0.0.1:9000
+MINIO_ACCESS_KEY=your_minio_access_key
+MINIO_SECRET_KEY=your_minio_secret_key
+MINIO_BUCKET=rag-images
+MINIO_IMG_DIR=documents
+```
+
+项目通过 `python-dotenv` 自动加载配置。`MINIO_ENDPOINT` 当前应填写不带 `http://` 或 `https://` 的地址；MinIO 客户端目前固定使用非 TLS 连接，并为 Bucket 设置公开读取策略。请仅在可信环境中使用，生产环境应补充 HTTPS 和更严格的访问控制。
+
+`.env` 已被 Git 忽略，请勿将真实 Token、API Key 或存储凭据写入 README、`.env.example` 或提交到仓库。
 
 ## 运行当前 Graph
 
 在项目根目录执行：
 
 ```bash
-uv run python main_graph.py
+uv run python -m tiiauo.import_process.main_graph
 ```
 
 运行前需要将 `tiiauo/import_process/main_graph.py` 示例中的 `local_file_path` 修改为本机真实存在的 `.pdf` 或 `.md` 文件路径。
@@ -190,7 +240,8 @@ print(result)
 
 - 输入 PDF 时，`local_dir` 为必填项，同时必须配置 `MINERU_API`；解析结果会写入该目录。
 - 输入 Markdown 时，会直接跳过 PDF 解析节点，进入 Markdown 图片处理节点。
-- 目前图片处理之后的节点仍为空实现，因此完整 Graph 暂不会产生切片、Embedding 或 Milvus 数据。
+- 创建 Graph Runner 时会初始化 MinIO 客户端，因此当前运行主流程前需要确保 MinIO 配置正确且服务可访问。
+- 图片处理之后的节点仍为空实现，因此完整 Graph 暂不会产生切片、Embedding 或 Milvus 数据。
 
 当前 `tiiauo/import_process/main_graph.py` 的 `__main__` 区域使用本地示例路径。运行前请替换 `local_file_path` 和 `local_dir`，后续可再将二者改造成命令行参数或 API 入参。
 
@@ -283,7 +334,10 @@ flowchart LR
 - [x] 串联完整的知识库构建 Graph 骨架
 - [x] 接入 MinerU，实现 PDF 上传、解析结果轮询与下载
 - [x] 解压 MinerU 结果并生成与 PDF 同名的 Markdown 文件
-- [ ] 实现 Markdown 图片提取与多模态理解
+- [x] 实现 Markdown 图片识别和上下文提取
+- [x] 接入视觉模型生成图片替代文本，并增加 RPM 限流
+- [x] 上传图片到 MinIO，并在 `State.md_content` 中改写图片链接
+- [ ] 完善 MinIO 对象隔离、历史保留、并发安全和私有访问策略
 - [ ] 实现文档切片策略
 - [ ] 实现主体识别和标签提取
 - [ ] 接入 BGE-M3 Embedding
@@ -299,6 +353,8 @@ flowchart LR
 - **LangGraph**：工作流和状态编排
 - **LangChain**：模型、文本处理和 RAG 组件集成
 - **MinerU**：PDF 结构化解析
+- **OpenAI 兼容视觉模型**：Markdown 图片理解与替代文本生成
+- **MinIO**：文档图片对象存储
 - **BGE-M3（规划接入）**：稠密/稀疏文本向量化
 - **Milvus（规划接入）**：向量数据存储与检索
 - **FastAPI（规划使用）**：入库及检索服务接口
@@ -309,6 +365,8 @@ flowchart LR
 - 不要提交 `.env`、密钥、模型访问令牌或数据库密码。
 - 当前代码中的示例输入和输出路径仅用于本地调试，运行前必须替换，后续建议改为命令行参数或 API 入参。
 - PDF 转换和图片理解可能产生临时文件，建议统一写入已忽略的 `output/` 或 `tmp/` 目录。
-- MinerU 解析依赖外部网络服务，应为上传、轮询和下载请求补充合理的超时、重试和错误状态处理。
+- 当前图片节点会清理共享的 MinIO 图片前缀，不适合直接用于多任务并发或需要保留历史图片的环境。
+- 当前 MinIO Bucket 会被设置为公开读取，请勿存放敏感图片；生产环境应改用私有 Bucket 和签名 URL。
+- MinerU、视觉模型和 MinIO 都依赖外部服务，应继续完善请求超时、重试、失败恢复与可观测性。
 - 文档更新或删除时，需要同步更新 Milvus 中对应的切片，避免召回过期知识。
 - 对外返回检索结果时建议携带来源文件、页码或标题路径，保证答案可追溯。

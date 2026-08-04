@@ -59,10 +59,6 @@ class NodeMDImg(NodeBase):
             pattern = re.compile(r"!\[.*?\]\(.*?" + re.escape(image_file["file_name"]) + r"\)")
             md_content = re.sub(pattern,lambda _:f"![{image_file['description']}]({image_file['url']})", md_content)
 
-        # 保存修改后的md文件
-        with open(md_path_obj.parent / (md_path_obj.stem + "_updated.md"), "w", encoding="utf-8") as f:
-            f.write(md_content)
-
         return {
             "md_content": md_content
         }
