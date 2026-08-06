@@ -4,7 +4,7 @@ load_dotenv()
 
 
 
-RPM = 500
+RPM = 60
 class MineruConfig:
     mineru_api = os.getenv("MINERU_API")
 
@@ -19,5 +19,4 @@ class MinIoConfig:
     minio_access_key = os.getenv("MINIO_ACCESS_KEY")
     minio_secret_key = os.getenv("MINIO_SECRET_KEY")
     minio_bucket_name = os.getenv("MINIO_BUCKET")
-    minio_img_dir = os.getenv("MINIO_IMG_DIR")
 

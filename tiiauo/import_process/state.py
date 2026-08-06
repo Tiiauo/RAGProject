@@ -20,6 +20,7 @@ class ImportGraphState(TypedDict):
     # 内容数据
     md_content: str # Markdown 的全文内容
     chunks: list    # 切片列表
+    chunks_json_path: str # 文档切片 JSON 备份路径
     item_name:str # 识别主体的名称（例如：万用表）
 
     # 数据库关联

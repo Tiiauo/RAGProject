@@ -57,8 +57,8 @@ class ImportMainGraphRunner:
     def run(self, state: ImportGraphState):
         if self.graph is None:
             self.graph = self.builder.compile()
-        result = self.graph.invoke(state)
-        return result
+        res = self.graph.invoke(state)
+        return res
 
 
     @classmethod
@@ -69,6 +69,7 @@ class ImportMainGraphRunner:
 
 if __name__ == '__main__':
     init_state = {
+        "task_id": "T1-hak180产品安全手册",
         "local_file_path":r"D:\资料\资料\掌柜智库\资料\05-设备手册汇总\doc\hak180产品安全手册.pdf",
         "local_dir":r"D:\Learn_AI\RAGProjectData"
     }

@@ -30,10 +30,10 @@ class NodePDFToMD(NodeBase):
         zip_url = self.get_zip_url(batch_id,token)
 
         # 根据zip_url下载zip文件
-        zip_path = self.download_zip(local_dir_obj, pdf_path_obj, zip_url)
+        zip_path = self.download_zip(state,local_dir_obj, pdf_path_obj, zip_url)
 
         # 解压文件并进行处理(重命名)
-        new_md_path_obj = self.unzip_file_with_rename(local_dir_obj, pdf_path_obj, zip_path)
+        new_md_path_obj = self.unzip_file_with_rename(state,local_dir_obj, pdf_path_obj, zip_path)
 
         return {"md_path": str(new_md_path_obj)}
 
@@ -46,10 +46,10 @@ class NodePDFToMD(NodeBase):
 
         return token.strip()
 
-    def unzip_file_with_rename(self, local_dir_obj: Path, pdf_path_obj: Path, zip_path: Path):
+    def unzip_file_with_rename(self, state,local_dir_obj: Path, pdf_path_obj: Path, zip_path: Path):
         import zipfile
         import shutil
-        unzipped_file_path_obj = local_dir_obj / pdf_path_obj.stem
+        unzipped_file_path_obj = local_dir_obj /state.get("task_id","") / pdf_path_obj.stem
         if unzipped_file_path_obj.exists():
             shutil.rmtree(unzipped_file_path_obj)
         unzipped_file_path_obj.mkdir(parents=True, exist_ok=True)
@@ -73,11 +73,13 @@ class NodePDFToMD(NodeBase):
 
         return new_md_path_obj
 
-    def download_zip(self, local_dir_obj: Path, pdf_path_obj: Path, zip_url) -> Path:
+    def download_zip(self, state ,local_dir_obj: Path, pdf_path_obj: Path, zip_url) -> Path:
         import requests
 
-        zip_path = local_dir_obj / f"{pdf_path_obj.stem}.zip"
-        res_download = requests.get(zip_url)
+        zip_path = local_dir_obj / state.get("task_id","") / f"{pdf_path_obj.stem}.zip"
+        if not zip_path.parent.exists():
+            zip_path.parent.mkdir(parents=True, exist_ok=True)
+        res_download = requests.get(zip_url, timeout=60)
         # 此处虽然是请求,但所需的二进制文件可以直接获取到,而不是像之前那样数据在json中,所以不需要转json再深入判断
         if res_download.status_code == 200:
             with open(zip_path, 'wb') as f:

@@ -4,7 +4,7 @@
 
 当前阶段聚焦于实现 **RAG 知识库构建流程**：将 PDF 或 Markdown 文档依次完成解析、图片理解、文本切分、主体识别、向量化，并写入 Milvus。后续将在同一套 Graph 架构下增加 **知识检索流程**，最终形成“知识入库 Graph + 知识检索 Graph”两条相互独立、共享数据规范的工作流。
 
-> 当前项目处于知识库构建阶段。输入路由、MinerU PDF 解析和 Markdown 图片处理已经实现；文档切片、主体识别、BGE-M3 向量化和 Milvus 入库仍是待实现节点。
+> 当前项目处于知识库构建阶段。输入路由、MinerU PDF 解析、Markdown 图片处理和文档切片已经实现；主体识别、BGE-M3 向量化和 Milvus 入库仍是待实现节点。
 
 ## 项目目标
 
@@ -61,12 +61,12 @@ flowchart TD
 | `NodeEntry` | 校验文件路径，识别 PDF/Markdown，并初始化分支状态 | 已实现 |
 | `NodePDFToMD` | 调用 MinerU API，将 PDF 解析为结构化 Markdown 并下载到本地 | 已实现 |
 | `NodeMDImg` | 提取 Markdown 图片，生成描述，上传 MinIO 并改写图片链接 | 已实现 |
-| `NodeDocumentSplit` | 根据标题、段落或语义边界切分文档 | 待实现 |
+| `NodeDocumentSplit` | 按 Markdown 标题切段，对长段落递归切分并备份 JSON | 已实现 |
 | `NodeItemNameRecognition` | 识别文档主体并提取标签 | 待实现 |
 | `NodeBGEEmbedding` | 使用 BGE-M3 将切片转换为向量 | 待实现 |
 | `NodeImportMilvus` | 将文本、元数据和向量持久化到 Milvus | 待实现 |
 
-`NodeDocumentSplit`、`NodeItemNameRecognition`、`NodeBGEEmbedding` 和 `NodeImportMilvus` 当前会原样返回 State，可用于验证 Graph 的连接关系，但尚不会生成真实的切片、标签、向量或入库结果。
+`NodeItemNameRecognition`、`NodeBGEEmbedding` 和 `NodeImportMilvus` 当前会原样返回 State，可用于验证 Graph 的连接关系，但尚不会生成真实的主体标签、向量或入库结果。
 
 ### PDF 解析子流程
 
@@ -78,22 +78,23 @@ flowchart LR
     Batch --> Upload["上传 PDF"]
     Upload --> Poll["按 batch_id 轮询解析状态"]
     Poll --> Download["下载解析结果 ZIP"]
-    Download --> Unzip["解压到 local_dir/文件名/"]
+    Download --> Unzip["解压到 local_dir/task_id/文件名/"]
     Unzip --> Rename["full.md 重命名为 原文件名.md"]
     Rename --> State["写回 State.md_path"]
 ```
 
-假设输入为 `manual.pdf`，输出目录为 `D:\\RAGProjectData`，主要产物为：
+假设 `task_id` 为 `T1-manual`、输入为 `manual.pdf`、输出目录为 `D:\\RAGProjectData`，PDF 解析阶段的主要产物为：
 
 ```text
 D:\RAGProjectData\
-├── manual.zip
-└── manual\
-    ├── manual.md
-    └── ...                         # MinerU 返回的图片等附属文件
+└── T1-manual\
+    ├── manual.zip
+    └── manual\
+        ├── manual.md
+        └── ...                     # MinerU 返回的 images/ 等附属文件
 ```
 
-> 再次解析同名 PDF 时，程序会先删除 `local_dir/文件名/` 目录再重新解压。请勿把需要长期保存的其他文件放入该目录。
+> 再次解析相同 `task_id` 下的同名 PDF 时，程序会先删除 `local_dir/task_id/文件名/` 目录再重新解压。请勿把需要长期保存的其他文件放入该目录。
 
 ### Markdown 图片处理子流程
 
@@ -108,19 +109,50 @@ flowchart LR
     Context --> Vision["视觉模型生成中文替代文本"]
     Vision --> Upload["上传图片到 MinIO"]
     Upload --> Replace["替换描述与图片 URL"]
-    Replace --> State["写回 State.md_content"]
+    Replace --> Save["生成 *_new.md"]
+    Save --> State["写回 State.md_content"]
 ```
 
 当前图片处理行为：
 
 - 支持 `.jpg`、`.jpeg`、`.png`、`.gif`、`.bmp` 和 `.webp`。
 - 使用兼容 OpenAI Chat Completions 接口的视觉模型，生成不超过 100 个汉字的单行中文描述。
-- 使用滑动窗口限流器限制模型调用速率，当前配置为 `500 RPM`。
-- 将图片上传至 `MINIO_BUCKET/MINIO_IMG_DIR/`，并把 Markdown 图片地址替换为 MinIO HTTP URL。
-- 不生成新的 Markdown 文件；替换后的全文仅写入 `State.md_content`，供后续节点继续处理。
-- 如果 `images/` 不存在、不是目录或为空，节点记录日志后跳过，不中断 Graph。
+- 使用滑动窗口限流器限制模型调用速率，当前配置为 `60 RPM`；单次模型调用超时为 60 秒，最多重试 3 次。
+- 单张图片处理失败时会记录异常并保留原始引用，其他图片继续处理；如果全部失败，则返回原始 Markdown 内容。
+- 将成功处理的图片上传至 `MINIO_BUCKET/{task_id}/`，并把 Markdown 图片地址替换为 MinIO HTTP URL。
+- 在原 Markdown 同级目录生成 `<原文件名>_new.md`，同时把处理后的全文写入 `State.md_content` 供下游节点使用。
+- 如果 `images/` 不存在、不是目录或为空，节点返回原始 `md_content`，不中断 Graph。
 
-> 当前实现每次处理前会删除 `MINIO_IMG_DIR` 前缀下的已有对象。不要让多个任务共用存放重要文件的前缀，并发处理和历史图片保留策略需要在后续版本中完善。
+> 当前实现每次上传前会删除 MinIO 中当前 `task_id` 前缀下的已有对象。不同任务应使用不同且稳定的 `task_id`，同一任务重新执行时会覆盖该任务之前的图片。
+
+### 文档切片子流程
+
+`NodeDocumentSplit` 优先使用 `State.md_content`；如果上游没有提供有效内容，则回退读取 `State.md_path`：
+
+```mermaid
+flowchart LR
+    Content["读取 md_content 或 md_path"] --> Normalize["统一换行符"]
+    Normalize --> Sections["按 H1-H6 标题切分 Section"]
+    Sections --> Decision{"正文长度 ≥ 300？"}
+    Decision -->|否| Keep["保留完整 Section"]
+    Decision -->|是且含 HTML table| Table["表格 Section 保持完整"]
+    Decision -->|是| Recursive["按段落、句子等递归切分"]
+    Keep --> Chunks["生成 chunks"]
+    Table --> Chunks
+    Recursive --> Chunks
+    Chunks --> Backup["备份为 文件标题.json"]
+    Backup --> State["写回 chunks 与 chunks_json_path"]
+```
+
+当前切片策略：
+
+- 识别 Markdown `#` 至 `######` 标题；代码围栏内的 `#` 不会被当作标题。
+- 默认 `chunk_size=300`、`chunk_overlap=0`，长度按 Python 字符数计算。
+- 长 Section 使用 `RecursiveCharacterTextSplitter`，依次尝试空行、换行、中英文句末符号和空格等分隔符。
+- 正文中包含 `<table` 的 Section 暂不继续拆分，避免破坏 HTML 表格结构。
+- 切片包含 `title`、`content`、`part` 和长度信息；未被二次拆分的 Section 还保留 `file_title`。
+- 切片结果保存到原 Markdown 同级的 `<file_title>.json`，路径写入 `State.chunks_json_path`。
+
 
 ## 项目结构
 
@@ -161,7 +193,7 @@ RAGProject/
 | 流程控制 | `is_md_read_enabled`、`is_pdf_read_enabled` | 控制入口后的条件分支 |
 | 文件路径 | `local_file_path`、`local_dir`、`pdf_path`、`md_path` | 保存原始文件和中间产物位置 |
 | 文档信息 | `file_title`、`md_content` | 保存标题和 Markdown 全文 |
-| 处理结果 | `chunks`、`item_name` | 保存切片、主体和标签信息 |
+| 处理结果 | `chunks`、`chunks_json_path`、`item_name` | 保存切片、JSON 备份路径、主体和标签信息 |
 | 向量数据 | `embeddings_content` | 保存准备写入 Milvus 的向量及关联内容 |
 
 随着节点逐步实现，建议把 State 中非入口必需的字段声明为可选字段，或为不同阶段定义更明确的数据模型，避免节点在中间字段尚未产生时误用数据。
@@ -205,7 +237,6 @@ MINIO_ENDPOINT=127.0.0.1:9000
 MINIO_ACCESS_KEY=your_minio_access_key
 MINIO_SECRET_KEY=your_minio_secret_key
 MINIO_BUCKET=rag-images
-MINIO_IMG_DIR=documents
 ```
 
 项目通过 `python-dotenv` 自动加载配置。`MINIO_ENDPOINT` 当前应填写不带 `http://` 或 `https://` 的地址；MinIO 客户端目前固定使用非 TLS 连接，并为 Bucket 设置公开读取策略。请仅在可信环境中使用，生产环境应补充 HTTPS 和更严格的访问控制。
@@ -228,6 +259,7 @@ uv run python -m tiiauo.import_process.main_graph
 from tiiauo.import_process.main_graph import ImportMainGraphRunner
 
 initial_state = {
+    "task_id": "T1-example",
     "local_file_path": r"D:\\documents\\example.md",
     "local_dir": r"D:\\RAGProjectData",
 }
@@ -238,10 +270,12 @@ print(result)
 
 `local_file_path` 支持 `.pdf` 和 `.md`：
 
-- 输入 PDF 时，`local_dir` 为必填项，同时必须配置 `MINERU_API`；解析结果会写入该目录。
+- `task_id` 用于隔离本地解析产物和 MinIO 图片，建议每次任务都提供稳定且唯一的值。
+- 输入 PDF 时，`local_dir` 为必填项，同时必须配置 `MINERU_API`；解析结果会写入 `local_dir/task_id/`。
 - 输入 Markdown 时，会直接跳过 PDF 解析节点，进入 Markdown 图片处理节点。
 - 创建 Graph Runner 时会初始化 MinIO 客户端，因此当前运行主流程前需要确保 MinIO 配置正确且服务可访问。
-- 图片处理之后的节点仍为空实现，因此完整 Graph 暂不会产生切片、Embedding 或 Milvus 数据。
+- 文档切片会生成 `chunks`，并在 Markdown 同级目录备份 JSON。
+- 主体识别、Embedding 和 Milvus 入库仍为空实现，因此当前 Graph 尚不会产生向量或数据库记录。
 
 当前 `tiiauo/import_process/main_graph.py` 的 `__main__` 区域使用本地示例路径。运行前请替换 `local_file_path` 和 `local_dir`，后续可再将二者改造成命令行参数或 API 入参。
 
@@ -336,9 +370,10 @@ flowchart LR
 - [x] 解压 MinerU 结果并生成与 PDF 同名的 Markdown 文件
 - [x] 实现 Markdown 图片识别和上下文提取
 - [x] 接入视觉模型生成图片替代文本，并增加 RPM 限流
-- [x] 上传图片到 MinIO，并在 `State.md_content` 中改写图片链接
+- [x] 上传图片到按 `task_id` 隔离的 MinIO 前缀，改写图片链接并输出处理后的 Markdown
 - [ ] 完善 MinIO 对象隔离、历史保留、并发安全和私有访问策略
-- [ ] 实现文档切片策略
+- [x] 实现按 Markdown 标题分段和长文本递归切片
+- [x] 将切片结果写入 State 并备份为 JSON
 - [ ] 实现主体识别和标签提取
 - [ ] 接入 BGE-M3 Embedding
 - [ ] 设计并创建 Milvus Collection
@@ -355,6 +390,8 @@ flowchart LR
 - **MinerU**：PDF 结构化解析
 - **OpenAI 兼容视觉模型**：Markdown 图片理解与替代文本生成
 - **MinIO**：文档图片对象存储
+- **LangChain Text Splitters**：长文档递归切片
+- **PyTorch / TorchVision（CUDA 13.2）**：GPU 与后续本地模型运行基础
 - **BGE-M3（规划接入）**：稠密/稀疏文本向量化
 - **Milvus（规划接入）**：向量数据存储与检索
 - **FastAPI（规划使用）**：入库及检索服务接口
@@ -365,7 +402,7 @@ flowchart LR
 - 不要提交 `.env`、密钥、模型访问令牌或数据库密码。
 - 当前代码中的示例输入和输出路径仅用于本地调试，运行前必须替换，后续建议改为命令行参数或 API 入参。
 - PDF 转换和图片理解可能产生临时文件，建议统一写入已忽略的 `output/` 或 `tmp/` 目录。
-- 当前图片节点会清理共享的 MinIO 图片前缀，不适合直接用于多任务并发或需要保留历史图片的环境。
+- 当前图片节点会清理对应 `task_id` 的 MinIO 前缀；重复使用同一任务 ID 会覆盖历史图片。
 - 当前 MinIO Bucket 会被设置为公开读取，请勿存放敏感图片；生产环境应改用私有 Bucket 和签名 URL。
 - MinerU、视觉模型和 MinIO 都依赖外部服务，应继续完善请求超时、重试、失败恢复与可观测性。
 - 文档更新或删除时，需要同步更新 Milvus 中对应的切片，避免召回过期知识。

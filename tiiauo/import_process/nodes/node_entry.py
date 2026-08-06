@@ -50,7 +50,7 @@ class NodeEntry(NodeBase):
 if __name__ == '__main__':
     node = NodeEntry()
     init_state = {
-        "local_file_path":r"D:\资料\资料\11、掌柜智库01\资料\05-设备手册汇总\doc\hak180产品安全手册.txt"
+        "local_file_path":r"D:\资料\资料\掌柜智库\资料\05-设备手册汇总\doc\hak180产品安全手册.pdf"
     }
     result = node.process(init_state)
     logger.info(to_json(result))
